@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Analizador de Requerimientos (OpenRouter)</title>
+    <style>
+      :root {
+        font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto;
+      }
+      body {
+        margin: 24px;
+      }
+      textarea {
+        width: 100%;
+        min-height: 180px;
+        padding: 12px;
+      }
+      .row {
+        display: flex;
+        gap: 12px;
+        align-items: center;
+        flex-wrap: wrap;
+      }
+      button {
+        padding: 10px 14px;
+        border: 0;
+        border-radius: 8px;
+        cursor: pointer;
+      }
+      .primary {
+        background: #111827;
+        color: white;
+      }
+      .muted {
+        background: #e5e7eb;
+      }
+      pre {
+        background: #0b1020;
+        color: #d1e7ff;
+        padding: 12px;
+        border-radius: 8px;
+        overflow: auto;
+      }
+      .cards {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+        gap: 12px;
+        margin-top: 16px;
+      }
+      .card {
+        border: 1px solid #e5e7eb;
+        border-radius: 12px;
+        padding: 12px;
+      }
+      .tag {
+        font-size: 12px;
+        padding: 2px 6px;
+        border-radius: 999px;
+        background: #f3f4f6;
+      }
+      .small {
+        font-size: 12px;
+        color: #6b7280;
+      }
+      label {
+        font-size: 14px;
+        color: #374151;
+      }
+      select {
+        padding: 8px;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Analizador de Requerimientos con IA (OpenRouter)</h1>
+    <p class="small">
+      Ingresa una especificación y la IA propondrá procesos, subprocesos y casos
+      de uso. Se guardan en SQLite.
+    </p>
+
+    <label for="model">Modelo:</label>
+    <div class="row">
+      <select id="model">
+        <option value="ddeepseek/deepseek-chat-v3.1:free">
+          DeepSeek V3.1 (free)
+        </option>
+        <option value="openai/gpt-oss-20b:free">
+          OpenAI: gpt-oss-20b (free)
+        </option>
+        <option value="z-ai/glm-4.5-air:free">Z.AI: GLM 4.5 Air (free)</option>
+        <option value="qwen/qwen3-coder:free">
+          Qwen Coder 32B Instruct (free)
+        </option>
+      </select>
+      <button id="analyze" class="primary">Analizar y Guardar</button>
+      <button id="refresh" class="muted">Refrescar árbol</button>
+      <button id="reset" class="muted">Reset DB</button>
+    </div>
+
+    <textarea
+      id="spec"
+      placeholder="Ej. Necesito un sistema para gestionar citas médicas con registro de pacientes, agenda por médico, recordatorios por WhatsApp/SMS y facturación..."
+    ></textarea>
+
+    <h3>Respuesta (JSON)</h3>
+    <pre id="json"></pre>
+
+    <h3>Árbol en DB</h3>
+    <div id="tree"></div>
+
+    <script>
+      async function analyze() {
+        const specText = document.getElementById("spec").value.trim();
+        const model = document.getElementById("model").value;
+        const btn = document.getElementById("analyze");
+        btn.disabled = true;
+        btn.textContent = "Analizando...";
+        try {
+          const res = await fetch("/api/analyze", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ specText, model }),
+          });
+
+          if (!res.ok) {
+            const text = await res.text();
+            document.getElementById(
+              "json"
+            ).textContent = `Error ${res.status}: ${text}`;
+            return;
+          }
+
+          const data = await res.json();
+          document.getElementById("json").textContent = JSON.stringify(
+            data.parsed || data,
+            null,
+            2
+          );
+          await loadTree();
+        } catch (e) {
+          document.getElementById("json").textContent = String(e);
+        } finally {
+          btn.disabled = false;
+          btn.textContent = "Analizar y Guardar";
+        }
+      }
+
+      async function loadTree() {
+        const res = await fetch("/api/tree");
+        const tree = await res.json();
+        const container = document.getElementById("tree");
+        container.innerHTML = "";
+
+        for (const p of tree) {
+          const card = document.createElement("div");
+          card.className = "card";
+          card.innerHTML = `
+      <h3>${p.nombre}</h3>
+      <p class="small">${p.descripcion || ""}</p>
+      <div class="cards"></div>
+    `;
+          const subGrid = card.querySelector(".cards");
+
+          for (const s of p.subprocesos || []) {
+            const sub = document.createElement("div");
+            sub.className = "card";
+            sub.innerHTML = `
+        <strong>Subproceso:</strong> ${s.nombre}<br/>
+        <span class="small">${s.descripcion || ""}</span>
+        <div class="cards"></div>
+      `;
+            const cuGrid = sub.querySelector(".cards");
+
+            for (const c of s.casos_uso || []) {
+              const cu = document.createElement("div");
+              cu.className = "card";
+              cu.innerHTML = `
+          <div><span class="tag">CU</span> ${c.nombre}</div>
+          <div class="small">${c.descripcion || ""}</div>
+          <div class="small"><strong>Actor:</strong> ${
+            c.actor_principal || "-"
+          }</div>
+          <div class="small"><strong>Tipo:</strong> ${
+            c.tipo_caso_uso
+          } (1=F,2=NF,3=S)</div>
+        `;
+              cuGrid.appendChild(cu);
+            }
+            subGrid.appendChild(sub);
+          }
+          container.appendChild(card);
+        }
+      }
+
+      async function resetDb() {
+        await fetch("/api/reset", { method: "DELETE" });
+        await loadTree();
+        document.getElementById("json").textContent = "";
+      }
+
+      document.getElementById("analyze").addEventListener("click", analyze);
+      document.getElementById("refresh").addEventListener("click", loadTree);
+      document.getElementById("reset").addEventListener("click", resetDb);
+      loadTree();
+    </script>
+  </body>
+</html>
